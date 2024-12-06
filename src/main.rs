@@ -7,18 +7,42 @@ async fn main() {
 
     loop {
         let (socket, addr) = listener.accept().await.unwrap();
-        process(socket).await;
         println!("got connection from:{}", addr);
+
+        tokio::spawn(
+            async move{
+                process(socket).await;
+            }
+        );
     }
 }
 
 async fn process(socket: TcpStream){
+    use mini_redis::Command::{self, Get, Set};
+    use std::collections::HashMap;
+
+    let mut db = HashMap::new();
+
     let mut connection = Connection::new(socket);
 
-    if let Some(frame) = connection.read_frame().await.unwrap() {
-        println!("got:{}", frame);
+    while let Some(frame) = connection.read_frame().await.unwrap() {
+        let response = match Command::from_frame(frame).unwrap() {
+            Set(cmd) => {
+                db.insert(cmd.key().to_string(), cmd.value().to_vec());
+                Frame::Simple("OK".to_string())
+            }
+            Get(cmd) => {
+                if let Some(value) = db.get(cmd.key()) {
+                    // `Frame::Bulk` expects data to be of type `Bytes`. This
+                    // type will be covered later in the tutorial. For now,
+                    // `&Vec<u8>` is converted to `Bytes` using `into()`.
+                    Frame::Bulk(value.clone().into())
+                } else {
+                    Frame::Null
+                }
+            }
+            cmd => panic!("unimplemented {:?}", cmd),
+        };
+        connection.write_frame(&response).await.unwrap();
     }
-
-    let response = Frame::Error("unimplemented".to_string());
-    connection.write_frame(&response).await.unwrap();
 }
